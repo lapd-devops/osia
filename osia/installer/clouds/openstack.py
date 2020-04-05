@@ -15,6 +15,8 @@
 # limitations under the License.
 """Module implements support for Openstack installation"""
 from operator import itemgetter
+from pathlib import Path
+from osia.installer.downloader import get_url, download_image
 from typing import List, Optional
 from os import path
 
@@ -23,6 +25,7 @@ import json
 from munch import Munch
 from openstack.connection import from_config, Connection
 from openstack.network.v2.floating_ip import FloatingIP
+from openstack.image import Image
 from .base import AbstractInstaller
 
 
@@ -52,6 +55,26 @@ def delete_fips(fips_file: str):
     os_fips = [j for k in fips['fips'] for j in connection.network.ips(floating_ip_address=k)]
     for i in os_fips:
         connection.network.delete_ip(i)
+
+
+def delete_image(fips_file, cluster_name):
+    """Function checkes the uploaded image into openstack
+    and removes from its metadata information about associated
+    cluster.
+    If last associated cluster was removed, the image is deleted"""
+    fips = None
+    with open(fips_file) as fi:
+        fips = json.load(fi)
+    if fips.get('image', None) is None:
+        return
+    connection = load_connection_openstack(fips['cloud'])
+    image = connection.image.find_image(fips['image'])
+    clusters = image.properties['osia_clusters'].split(',')
+    clusters.remove(cluster_name)
+    if len(clusters) == 0:
+        connection.image.delete_image(image)
+    else:
+        connection.image.update_image(image, osia_clusters=','.join(clusters))
 
 
 def _find_best_fit(networks: dict) -> str:
@@ -100,6 +123,29 @@ def _get_floating_ip(osp_connection: Connection,
     return fip
 
 
+def add_cluster(osp_connection: Connection, image: Image, cluster_name: str):
+    clusters = image.properties['osia_clusters'].split(',')
+    clusters.append(cluster_name)
+    osp_connection.image.update_image(image, osia_clusters=','.join(clusters))
+
+
+def resolve_image(osp_connection: Connection, cloud: str,  cluster_name: str, images_dir: str, installer: str):
+    inst_url, version = get_url(installer)
+    image_name = f"osia-rhcos-{version}"
+    image = osp_connection.image.find_image(image_name, ignore_missing=True)
+    if image is None:
+        image_file = download_image(inst_url, Path(images_dir).joinpath(f"rhcos-{version}.qcow2").as_posix())
+
+        osp_connection.create_image(image_name, filename=image_file, container_format="bare", disk_format="qcow2", wait=True,
+                                    osia_clusters=cluster_name, visibility='private')
+        image = osp_connection.image.find_image(image_name)
+    else:
+        add_cluster(osp_connection, image, cluster_name)
+    with open(Path(cluster_name).joinpath("fips.json"), "w") as fips:
+        d = {'cloud': cloud, 'fips': list(), 'image': image_name}
+        json.dump(d, fips)
+    return image.name
+
 class OpenstackInstaller(AbstractInstaller):
     """Class containing configuration related to openstack"""
     # pylint: disable=too-many-instance-attributes
@@ -107,6 +153,8 @@ class OpenstackInstaller(AbstractInstaller):
                  osp_cloud=None,
                  osp_base_flavor=None,
                  network_list=None,
+                 os_image=None,
+                 images_dir=None,
                  args=None,
                  **kwargs):
         super().__init__(**kwargs)
@@ -114,17 +162,21 @@ class OpenstackInstaller(AbstractInstaller):
         self.osp_base_flavor = osp_base_flavor
         self.network_list = network_list
         self.args = args
+        self.os_image = os_image
         self.osp_fip = None
         self.network = None
         self.connection = None
         self.apps_fip = None
         self.osp_network = None
+        self.images_dir = images_dir
 
     def get_template_name(self):
         return 'openstack.jinja2'
 
     def acquire_resources(self):
         self.connection = _load_connection_openstack(self.osp_cloud)
+        if self.os_image is None or self.os_image == "":
+            self.os_image = resolve_image(self.connection, self.osp_cloud, self.cluster_name, self.images_dir, self.installer)
         self.network, self.osp_network = _find_fit_network(self.connection, self.network_list)
         if self.network is None:
             raise Exception("No suitable network found")

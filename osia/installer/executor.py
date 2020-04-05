@@ -20,7 +20,7 @@ from pathlib import Path
 import logging
 
 from .clouds import InstallerProvider
-from .clouds.openstack import delete_fips
+from .clouds.openstack import delete_fips, delete_image
 from .dns import DNSProvider
 
 
@@ -68,7 +68,7 @@ def install_cluster(cloud_provider,
     inst.process_template()
 
     try:
-        execute_installer(installer, cluster_name, 'create', os_image=os_image)
+        execute_installer(installer, cluster_name, 'create', os_image=getattr(inst, 'os_image', None))
     except InstallerExecutionException as exception:
         logging.error(exception)
         if inst.check_clean():
@@ -91,6 +91,7 @@ def delete_cluster(cluster_name, installer):
     fips_file = Path(cluster_name) / "fips.json"
     if fips_file.exists():
         delete_fips(fips_file)
+        delete_image(fips_file, cluster_name)
         fips_file.unlink()
     for k in [1, 2]:
         try:

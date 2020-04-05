@@ -37,10 +37,10 @@ ARGUMENTS = {
         'cloud': {'help': 'Cloud provider to be used.', 'type': str,
                   'choices': ['openstack', 'aws']},
         'dns_provider': {'help': 'Provider of dns used with openstack cloud',
-                         'type': str, 'choices': ['nsupdate', 'route53']},
-        'os_image': {'help': 'Image to override'}
+                         'type': str, 'choices': ['nsupdate', 'route53']}
     },
     'install': {
+        'os_image': {'help': 'Image to override', 'type': str},
         'base_domain': {'help': 'Base domain for the cluster', 'type': str},
         'master_flavor': {'help': 'Flavor used for master nodes'},
         'master_replicas': {'help': 'Number of replicas for master nodes', 'type': int},
@@ -87,8 +87,7 @@ def _merge_dictionaries(from_args):
               'dns': None,
               'installer': _resolve_installer(from_args),
               'cloud_name': None,
-              'cluster_name': from_args.cluster_name,
-              'os_image': None}
+              'cluster_name': from_args.cluster_name}
     if not from_args.__contains__('cloud'):
         return result
     defaults = settings.as_dict()
@@ -101,13 +100,13 @@ def _merge_dictionaries(from_args):
              if vars(from_args)[j] is not None}
         )
     if from_args.cloud is not None:
-        result['os_image'] = from_args.os_image
         result['cloud_name'] = from_args.cloud
         result['cloud'] = defaults['CLOUD'][from_args.cloud]
         result['cloud'].update(
             {j: i['proc'](vars(from_args)[j]) for j, i in ARGUMENTS['install'].items()
              if vars(from_args)[j] is not None}
         )
+        result['cloud']['installer'] = result['installer']
         if result['dns'] is not None:
             result['dns']['conf'].update({
                 'cluster_name': from_args.cluster_name,
@@ -126,7 +125,6 @@ def _exec_install_cluster(args):
         conf['cluster_name'],
         conf['cloud'],
         conf['installer'],
-        os_image=conf['os_image'],
         dns_settings=conf['dns']
     )
     if not args.skip_git:
@@ -186,9 +184,7 @@ def _setup_parser():
 
     for arg, value in sorted({k: v for a in ARGUMENTS for k, v in ARGUMENTS[a].items()}.items()):
         install.add_argument(f"--{arg.replace('_', '-')}",
-                             help=value.get('help', None),
-                             type=value.get('type', None))
-
+                             **{k: v for k, v in value.items() if k != 'proc'})
     install.set_defaults(func=_exec_install_cluster)
 
     clean = sub_parsers.add_parser('clean', help='Remove cluster', parents=[commons])
