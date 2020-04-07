@@ -19,7 +19,6 @@ from sys import platform
 from tempfile import NamedTemporaryFile
 from pathlib import Path
 from typing import Tuple, Optional
-from .utils import get_data
 
 import logging
 import re
@@ -29,6 +28,7 @@ import time
 import requests
 
 from bs4 import BeautifulSoup
+from .utils import get_data
 
 
 PROD_ROOT = "http://mirror.openshift.com/pub/openshift-v4/clients/ocp/"

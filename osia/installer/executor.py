@@ -46,7 +46,6 @@ def execute_installer(installer, base_path, operation, os_image=None):
 def install_cluster(cloud_provider,
                     cluster_name, configuration,
                     installer,
-                    os_image=None,
                     dns_settings=None):
     """Function represents main entrypoint to all logic necessary for
     cluster's deployment."""
@@ -68,7 +67,8 @@ def install_cluster(cloud_provider,
     inst.process_template()
 
     try:
-        execute_installer(installer, cluster_name, 'create', os_image=getattr(inst, 'os_image', None))
+        execute_installer(installer, cluster_name, 'create',
+                          os_image=getattr(inst, 'os_image', None))
     except InstallerExecutionException as exception:
         logging.error(exception)
         if inst.check_clean():

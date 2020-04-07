@@ -106,6 +106,7 @@ def _merge_dictionaries(from_args):
             {j: i['proc'](vars(from_args)[j]) for j, i in ARGUMENTS['install'].items()
              if vars(from_args)[j] is not None}
         )
+        # pylint: disable=unsupported-assignment-operation
         result['cloud']['installer'] = result['installer']
         if result['dns'] is not None:
             result['dns']['conf'].update({
