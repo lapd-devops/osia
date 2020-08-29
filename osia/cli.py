@@ -49,6 +49,8 @@ ARGUMENTS = {
         'list_of_regions': {'help': 'List of regions, comma separated values', 'proc': _read_list},
         'osp_cloud': {'help': 'Name of openstack cloud identity in clouds.yaml'},
         'osp_base_flavor': {'help': 'Base flavor to be used in openstack'},
+        'osp_image_download': {'help': 'Enable image download by osia instead of openshift-install',
+                               'action': 'store_true'},
         'network_list': {'help': 'List of usable openstack networks, comma separated values',
                          'proc': _read_list},
         'worker_flavor': {'help': 'flavor of worker node'},

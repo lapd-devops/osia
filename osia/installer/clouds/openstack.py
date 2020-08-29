@@ -16,10 +16,11 @@
 """Module implements support for Openstack installation"""
 from operator import itemgetter
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from os import path
 
 import json
+import logging
 
 from munch import Munch
 from openstack.connection import from_config, Connection
@@ -27,6 +28,11 @@ from openstack.network.v2.floating_ip import FloatingIP
 from openstack.image.v2.image import Image
 from osia.installer.clouds.base import AbstractInstaller
 from osia.installer.downloader import get_url, download_image
+
+
+class ImageException(Exception):
+    def __init__(self, *args, **kwargs):
+        super().__init__(self, *args, **kwargs)
 
 
 def _load_connection_openstack(conn_name: str, args=None) -> Connection:
@@ -72,8 +78,10 @@ def delete_image(fips_file, cluster_name):
     clusters = image.properties['osia_clusters'].split(',')
     clusters.remove(cluster_name)
     if len(clusters) == 0:
+        logging.info("Deleting uploaded image %s, since all clusters were removed", image.name)
         connection.image.delete_image(image)
     else:
+        logging.info("Removing cluster %s from image %s metadata", cluster_name, image.name)
         connection.image.update_image(image, osia_clusters=','.join(clusters))
 
 
@@ -81,14 +89,15 @@ def _find_best_fit(networks: dict) -> str:
     return max(networks.items(), key=itemgetter(1))[0]
 
 
-def _find_fit_network(osp_connection: Connection, networks: List[str]) -> Optional[str]:
+def _find_fit_network(osp_connection: Connection,
+                      networks: List[str]) -> Tuple[Optional[str], Optional[str]]:
     named_networks = {k['name']: k for k in osp_connection.list_networks() if k['name'] in networks}
     results = dict()
     for net_name in networks:
         net_avail = osp_connection.network.get_network_ip_availability(named_networks[net_name])
         results[net_name] = net_avail['total_ips'] / net_avail['used_ips']
     result = _find_best_fit(results)
-    return (named_networks[result]['id'], result)
+    return named_networks[result]['id'], result
 
 
 def _find_cluster_ports(osp_connection: Connection, cluster_name: str) -> Munch:
@@ -131,26 +140,45 @@ def add_cluster(osp_connection: Connection, image: Image, cluster_name: str):
     osp_connection.image.update_image(image, osia_clusters=','.join(clusters))
 
 
+# pylint: disable=too-many-arguments
 def resolve_image(osp_connection: Connection,
                   cloud: str,
                   cluster_name: str,
                   images_dir: str,
-                  installer: str):
+                  installer: str,
+                  error: Optional[Exception]):
     """Function searches for image in openstack and creates it
     if it doesn't exist"""
     inst_url, version = get_url(installer)
     image_name = f"osia-rhcos-{version}"
     image = osp_connection.image.find_image(image_name, ignore_missing=True)
     if image is None:
-        image_file = download_image(inst_url, Path(images_dir)
-                                    .joinpath(f"rhcos-{version}.qcow2").as_posix())
+        image_path = Path(images_dir).joinpath(f"rhcos-{version}.qcow2")
+        image_file = None
+        if image_path.exists():
+            logging.info("Found image at %s", image_path.name)
+            image_file = image_path.as_posix()
+        else:
+            logging.info("Starting download of image %s", inst_url)
+            image_file = download_image(inst_url, image_path.as_posix())
 
+        logging.info("Starting upload of image into openstack")
         osp_connection.create_image(image_name, filename=image_file,
                                     container_format="bare", disk_format="qcow2", wait=True,
                                     osia_clusters=cluster_name, visibility='private')
+        logging.info("Upload finished")
         image = osp_connection.image.find_image(image_name)
+        logging.info("Image uploaded as %s", image.name)
     else:
-        add_cluster(osp_connection, image, cluster_name)
+        logging.info("Reusing found image in openstack %s", image.name)
+        try:
+            add_cluster(osp_connection, image, cluster_name)
+        except Exception as err:
+            if error is not None:
+                raise ImageException("Couldn't add cluster to image") from err
+            logging.warning("Image disappeared while metadata were written, trying again")
+            logging.debug("Openstack error: %s", err)
+            return resolve_image(osp_connection, cloud, cluster_name, images_dir, installer, err)
     with open(Path(cluster_name).joinpath("fips.json"), "w") as fips:
         obj = {'cloud': cloud, 'fips': list(), 'image': image_name}
         json.dump(obj, fips)
@@ -166,6 +194,7 @@ class OpenstackInstaller(AbstractInstaller):
                  network_list=None,
                  os_image=None,
                  images_dir=None,
+                 osp_image_download=False,
                  args=None,
                  **kwargs):
         super().__init__(**kwargs)
@@ -174,6 +203,7 @@ class OpenstackInstaller(AbstractInstaller):
         self.network_list = network_list
         self.args = args
         self.os_image = os_image
+        self.image_download = osp_image_download
         self.osp_fip = None
         self.network = None
         self.connection = None
@@ -186,9 +216,13 @@ class OpenstackInstaller(AbstractInstaller):
 
     def acquire_resources(self):
         self.connection = _load_connection_openstack(self.osp_cloud)
-        if self.os_image is None or self.os_image == "":
-            self.os_image = resolve_image(self.connection, self.osp_cloud, self.cluster_name,
-                                          self.images_dir, self.installer)
+        if self.image_download and (self.os_image is None or self.os_image == ""):
+            try:
+                self.os_image = resolve_image(self.connection, self.osp_cloud, self.cluster_name,
+                                              self.images_dir, self.installer, None)
+            except ImageException as exc:
+                logging.error("Failed image resolution! error: %s", exc)
+                raise Exception("Image download failed") from exc
         self.network, self.osp_network = _find_fit_network(self.connection, self.network_list)
         if self.network is None:
             raise Exception("No suitable network found")
